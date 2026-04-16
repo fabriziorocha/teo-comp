@@ -1,0 +1,16 @@
+cabal-version: 2.4
+name: mestrado-jefferson
+version: 0.1.0.0
+build-type: Simple
+
+executable lab01-part1
+  main-is: lab01-part1.hs
+  hs-source-dirs: .
+  default-language: Haskell2010
+  build-depends:
+      aeson ^>=2.2.3.0,
+      base >=4.14 && <5,
+      containers >=0.6 && <0.7,
+      scientific >=0.3 && <0.4,
+      text >=1.2 && <3,
+      yaml >=0.11 && <0.12

@@ -1,0 +1,436 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE InstanceSigs #-}
+
+import System.Environment (getArgs)
+import System.Exit (die)
+import Control.Monad (when)
+import Data.List (transpose)
+
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
+import qualified Data.Yaml as Y
+import qualified Data.Scientific as Scientific
+import qualified Data.Set as Set
+
+import Data.Text (Text)
+
+import Data.Aeson
+  ( FromJSON (parseJSON),
+    ToJSON (toJSON),
+    Value (..),
+    object,
+    withText,
+    withObject,
+    (.:),
+    (.=)
+  )
+
+-- Definição de tipos para representar o State
+newtype State = State {aState :: Text} deriving (Eq, Ord, Show)
+
+instance FromJSON State where
+  parseJSON :: Value -> Y.Parser State
+  parseJSON v = State <$> parseTextLike v
+
+
+-- Definição de tipos para representar o Symbol
+newtype Symbol = Symbol {aSymbol :: Text} deriving (Eq, Show)
+
+instance FromJSON Symbol where
+  parseJSON :: Value -> Y.Parser Symbol
+  parseJSON v = Symbol <$> parseTextLike v
+
+-- Definição de tipos para representar o tipo do autômato (DFA, NFA, NFAe)
+data AutomatonType = TypeDFA | TypeNFA | TypeNFAE deriving (Eq, Show)
+
+instance FromJSON AutomatonType where
+  parseJSON :: Value -> Y.Parser AutomatonType
+  parseJSON = withText "type" $ \t ->
+    case Text.toLower t of
+      "dfa" -> pure TypeDFA
+      "nfa" -> pure TypeNFA
+      "nfae" -> pure TypeNFAE
+      _ -> fail "Invalid type. Expected one of: dfa, nfa, nfae"
+
+instance ToJSON AutomatonType where
+  toJSON :: AutomatonType -> Value
+  toJSON t =
+    String $ case t of
+      TypeDFA -> "dfa"
+      TypeNFA -> "nfa"
+      TypeNFAE -> "nfae"
+
+-- Definição de tipos para representar uma transição do autômato
+data Transition = Transition
+  { tFrom :: State,
+    tSymbol :: Symbol,
+    tTo :: [State]
+  } deriving (Eq, Show)
+
+instance FromJSON Transition where
+  parseJSON :: Value -> Y.Parser Transition
+  parseJSON = withObject "Transition" $ \o ->
+    Transition
+      <$> o .: "from"
+      <*> o .: "symbol"
+      <*> o .: "to"
+  
+instance ToJSON Transition where
+  toJSON :: Transition -> Value
+  toJSON tr =
+    object
+      [ "from" .= aState (tFrom tr),
+        "symbol" .= aSymbol (tSymbol tr),
+        "to" .= map aState (tTo tr)
+      ]
+
+-- Definição de tipos para representar o autômato completo
+data Automaton = Automaton
+  { aType :: AutomatonType,
+    aAlphabet :: [Symbol],
+    aStates :: [State],
+    aInitialState :: State,
+    aFinalStates :: [State],
+    aTransitions :: [Transition]
+  } deriving (Show)
+
+instance FromJSON Automaton where
+  parseJSON :: Value -> Y.Parser Automaton
+  parseJSON = withObject "Automaton" $ \o ->
+    Automaton
+      <$> o .: "type"
+      <*> o .: "alphabet"
+      <*> o .: "states"
+      <*> o .: "initial_state"
+      <*> o .: "final_states"
+      <*> o .: "transitions"
+
+instance ToJSON Automaton where
+  toJSON :: Automaton -> Value
+  toJSON automaton =
+    object
+      [ "type" .= aType automaton,
+        "alphabet" .= map aSymbol (aAlphabet automaton),
+        "states" .= map aState (aStates automaton),
+        "initial_state" .= aState (aInitialState automaton),
+        "final_states" .= map aState (aFinalStates automaton),
+        "transitions" .= map toJSON (aTransitions automaton)
+      ]
+
+
+parseTextLike :: Value -> Y.Parser Text
+parseTextLike (String t) = pure t
+parseTextLike (Number n) = pure (numberToText n)
+parseTextLike _ = fail "Esperado texto ou numero"
+
+numberToText :: Scientific.Scientific -> Text
+numberToText n =
+  case Scientific.floatingOrInteger n :: Either Double Integer of
+    Right i -> Text.pack (show i)
+    Left _ -> Text.pack (Scientific.formatScientific Scientific.Generic Nothing n)
+
+-- Remove tudo após '#' em cada linha do content
+stripCommentsFromContent :: Text.Text -> Text.Text
+stripCommentsFromContent =
+  Text.unlines
+  . filter (not . Text.null)
+  . map (Text.stripEnd . fst . Text.breakOn "#")
+  . Text.lines
+
+-- Função para validar o campo 'type' do autômato que deve ser um dos seguintes: 'dfa', 'nfa', 'nfae' (case-insensitive)
+validateAutomatonType :: Automaton -> Either String Automaton
+validateAutomatonType automaton
+  | aType automaton `elem` validTypes = Right automaton
+  | otherwise =
+      Left
+        ( "Campo 'type' invalido: "
+            ++ show (aType automaton)
+            ++ ". Valores permitidos: dfa, nfa, nfae"
+        )
+  where
+    validTypes = [TypeDFA, TypeNFA, TypeNFAE]
+
+-- Função para validar que 'states' não é uma lista vazia
+validateStatesNonEmpty :: Automaton -> Either String Automaton
+validateStatesNonEmpty automaton
+  | null (aStates automaton) = Left "Campo 'states' invalido: a lista nao pode ser vazia"
+  | otherwise = Right automaton
+
+-- Função para validar que 'initial_state' pertence à lista de 'states'
+validateInitialState :: Automaton -> Either String Automaton
+validateInitialState automaton
+  | aInitialState automaton `elem` aStates automaton = Right automaton
+  | otherwise =
+      Left
+        ( "Campo 'initial_state' invalido: "
+            ++ Text.unpack (aState (aInitialState automaton))
+            ++ " nao pertence a lista 'states'"
+        )
+
+-- Função para validar que 'final_states' é subconjunto de 'states'
+validateFinalStates :: Automaton -> Either String Automaton
+validateFinalStates automaton
+  | all (`elem` aStates automaton) (aFinalStates automaton) = Right automaton
+  | otherwise =
+      Left
+        ( "Campo 'final_states' invalido: "
+            ++ show (filter (`notElem` aStates automaton) (aFinalStates automaton))
+            ++ " nao pertencem a lista 'states'"
+        )
+
+-- Função para validar que existe ao menos uma transação
+validateTransitionsNonEmpty :: Automaton -> Either String Automaton
+validateTransitionsNonEmpty automaton
+  | null (aTransitions automaton) = Left "Campo 'transitions' invalido: a lista nao pode ser vazia"
+  | otherwise = Right automaton
+
+-- Função para validar cada transição:
+-- 1) 'from' pertence a 'states'
+-- 2) 'symbol' pertence a 'alphabet'
+-- 3) 'to' é subconjunto de 'states'
+validateTransitions :: Automaton -> Either String Automaton
+validateTransitions automaton =
+  case firstTransitionError (zip [1 :: Int ..] (aTransitions automaton)) of
+    Just err -> Left err
+    Nothing -> Right automaton
+  where
+    states = aStates automaton
+    alphabet = aAlphabet automaton
+
+    firstTransitionError [] = Nothing
+    firstTransitionError ((idx, tr) : rest)
+      | tFrom tr `notElem` states =
+          Just
+            ( "Transicao "
+                ++ show idx
+                ++ " invalida: 'from' = "
+          ++ Text.unpack (aState (tFrom tr))
+                ++ " nao pertence a lista 'states'"
+            )
+      | tSymbol tr `notElem` alphabet =
+          Just
+            ( "Transicao "
+                ++ show idx
+                ++ " invalida: 'symbol' = "
+          ++ Text.unpack (aSymbol (tSymbol tr))
+                ++ " nao pertence a lista 'alphabet'"
+            )
+      | not (all (`elem` states) (tTo tr)) =
+          Just
+            ( "Transicao "
+                ++ show idx
+                ++ " invalida: destinos "
+                ++ show (filter (`notElem` states) (tTo tr))
+                ++ " nao pertencem a lista 'states'"
+            )
+      | otherwise = firstTransitionError rest
+
+-- Função para normalizar o alfabeto de um autômato do tipo NFAe, garantindo que "epsilon" esteja presente
+normalizeAlphabetForNfae :: Automaton -> Automaton
+normalizeAlphabetForNfae automaton
+  | aType automaton == TypeNFAE && Symbol "epsilon" `notElem` aAlphabet automaton =
+      automaton {aAlphabet = aAlphabet automaton ++ [Symbol "epsilon"]}
+  | otherwise = automaton
+
+-- Função para calcular os estados alcançáveis a partir de um estado dado seguindo apenas transições com "epsilon"
+epsilonTargets :: Automaton -> State -> [State]
+epsilonTargets automaton state =
+  concatMap tTo [tr | tr <- aTransitions automaton, tFrom tr == state, tSymbol tr == Symbol "epsilon"]
+
+-- Função para calcular o fecho-epsilon de um estado, ou seja, 
+-- o conjunto de estados que podem ser alcançados a partir de um estado dado seguindo apenas transições com "epsilon", 
+-- incluindo o próprio estado
+epsilonClosure :: Automaton -> State -> [State]
+epsilonClosure automaton start =
+  [s | s <- aStates automaton, Set.member s visited]
+  where
+    visited = go Set.empty [start]
+
+    go seen [] = seen
+    go seen (current : rest)
+      | Set.member current seen = go seen rest
+      | otherwise =
+          let next = epsilonTargets automaton current
+           in go (Set.insert current seen) (next ++ rest)
+
+-- Função para construir a tabela de fecho-epsilon para cada estado do autômato
+buildClosureTable :: Automaton -> [(State, [State])]
+buildClosureTable automaton =
+  [(state, epsilonClosure automaton state) | state <- aStates automaton]
+
+-- Função para imprimir a tabela de fecho-epsilon de forma legível
+printClosureTable :: [(State, [State])] -> IO ()
+printClosureTable rows = do
+  let header = ["Estado corrente", "Fecho-e"]
+      matrixRows =
+        [ [aState state, formatTargets closureStates]
+        | (state, closureStates) <- rows
+        ]
+  renderAlignedTable header matrixRows
+
+-- Função para calcular as transições para cada símbolo do alfabeto (exceto "epsilon") a partir de um estado, 
+-- considerando o fecho-epsilon
+buildTransitionsTable :: Automaton -> [(State, [State], [(Symbol, [State])])]
+buildTransitionsTable automaton =
+  [ (state, closureStates, [(symbol, targetStates closureStates symbol) | symbol <- symbols])
+  | state <- aStates automaton
+  , let closureStates = epsilonClosure automaton state
+  ]
+  where
+    symbols = [symbol | symbol <- aAlphabet automaton, symbol /= Symbol "epsilon"]
+
+    targetStates closureStates symbol =
+      uniqueStates
+        ( closureStates >>= \s ->
+            concat [tTo tr | tr <- aTransitions automaton, tFrom tr == s, tSymbol tr == symbol] >>= epsilonClosure automaton
+        )
+
+    uniqueStates states = go Set.empty states
+
+    go _ [] = []
+    go seen (x : xs)
+      | Set.member x seen = go seen xs
+      | otherwise = x : go (Set.insert x seen) xs
+
+printTransitionsTable :: [(State, [State], [(Symbol, [State])])] -> IO ()
+printTransitionsTable rows = do
+  let symbols = case rows of
+        [] -> []
+        ((_, _, transitionsBySymbol) : _) -> map fst transitionsBySymbol
+      header = ["Estado corrente", "Fecho-e"] ++ map aSymbol symbols
+      matrixRows =
+        [ [aState state, formatTargets closureStates]
+            ++ map (formatTargets . snd) transitionsBySymbol
+        | (state, closureStates, transitionsBySymbol) <- rows
+        ]
+  renderAlignedTable header matrixRows
+
+buildMarkedTransitionsTable ::
+  Automaton ->
+  [(Text, State, [State], [(Symbol, [State])])]
+buildMarkedTransitionsTable automaton =
+  [ (markerFor state, state, closureStates, transitionsBySymbol)
+  | (state, closureStates, transitionsBySymbol) <- buildTransitionsTable automaton
+  ]
+  where
+    markerFor state =
+      initialMark <> finalMark
+      where
+        initialMark = if state == aInitialState automaton then "->" else ""
+        finalMark = if state `elem` aFinalStates automaton then "*" else ""
+
+printMarkedTransitionsTable ::
+  [(Text, State, [State], [(Symbol, [State])])] ->
+  IO ()
+printMarkedTransitionsTable rows = do
+  let symbols = case rows of
+        [] -> []
+        ((_, _, _, transitionsBySymbol) : _) -> map fst transitionsBySymbol
+      header = ["", "Estado corrente", "Fecho-e"] ++ map aSymbol symbols
+      matrixRows =
+        [ [ marker,
+            aState state,
+            formatTargets closureStates
+          ]
+            ++ map (formatTargets . snd) transitionsBySymbol
+        | (marker, state, closureStates, transitionsBySymbol) <- rows
+        ]
+  renderAlignedTable header matrixRows
+
+formatTargets :: [State] -> Text
+formatTargets [] = "∅"
+formatTargets states = Text.intercalate "," (map aState states)
+
+renderAlignedTable :: [Text] -> [[Text]] -> IO ()
+renderAlignedTable header matrixRows = do
+  let matrix = header : matrixRows
+      widths = map (maximum . map Text.length) (transpose matrix)
+      separator = Text.intercalate "-+-" [Text.replicate w "-" | w <- widths]
+
+  TIO.putStrLn (renderRow widths header)
+  TIO.putStrLn separator
+  mapM_ (TIO.putStrLn . renderRow widths) matrixRows
+  where
+    renderRow widths cells =
+      Text.intercalate " | " (zipWith padRight widths cells)
+
+    padRight width value =
+      value <> Text.replicate (width - Text.length value) " "
+
+
+main :: IO ()
+main = do
+
+  -- Lê o arquivo de entrada a partir dos argumentos da linha de comando
+  args <- getArgs
+  content <- case args of
+    [filePath] -> TIO.readFile filePath
+    _ -> die "Usage: lab01-part1 <input-file.yaml>"
+  let strippedContent = stripCommentsFromContent content
+
+  -- Converte o conteúdo YAML para o tipo de dado Automaton, tratando erros de parsing
+  automaton <- case Y.decodeEither' (TE.encodeUtf8 strippedContent) of
+    Left err -> die (Y.prettyPrintParseException err)
+    Right a -> pure a
+
+  -- Normaliza o alfabeto para autômatos do tipo NFAe, garantindo que "epsilon" esteja presente
+  let normalizedAutomaton = normalizeAlphabetForNfae automaton
+
+  -- Bloco de validações do autômato, onde cada validação retorna Either String Automaton. 
+  -- Em caso de erro, a mensagem é exibida e o programa termina. 
+  -- Caso contrário, o autômato é passado para a próxima validação.
+  _ <- case validateAutomatonType normalizedAutomaton of
+    Left msg -> die msg
+    Right okAutomaton -> pure okAutomaton
+
+  _ <- case validateStatesNonEmpty normalizedAutomaton of
+    Left msg -> die msg
+    Right okAutomaton -> pure okAutomaton
+
+  _ <- case validateInitialState normalizedAutomaton of
+    Left msg -> die msg
+    Right okAutomaton -> pure okAutomaton
+
+  _ <- case validateFinalStates normalizedAutomaton of
+    Left msg -> die msg
+    Right okAutomaton -> pure okAutomaton
+
+  _ <- case validateTransitionsNonEmpty normalizedAutomaton of
+    Left msg -> die msg
+    Right okAutomaton -> pure okAutomaton
+
+  _ <- case validateTransitions normalizedAutomaton of
+    Left msg -> die msg
+    Right okAutomaton -> pure okAutomaton
+
+
+  -- Verifica se existe transição com movimento vazio ("epsilon").
+  -- Nesse caso, trata-se de NFAe.
+  -- Vamos converter o autômato para NFA, removendo as transições com "epsilon"
+
+  -- Primeiro passo: Calcular o fecho-epsilon de cada estado, ou seja, 
+  -- o conjunto de estados que podem ser alcançados a partir de um estado dado 
+  -- seguindo apenas transições com "epsilon", incluindo o próprio estado, 
+  -- iniciando a partir do estado inicial.
+
+  when (aType normalizedAutomaton == TypeNFAE) $ do
+      let exportedType = TypeNFA
+      putStrLn "================================="
+      putStrLn "Passo 1: Recebido um autômato do tipo NFAe. Calculando o fecho-epsilon de cada estado..."
+      let closureTable = buildClosureTable normalizedAutomaton
+      printClosureTable closureTable
+      putStrLn "--------------------------------"
+      putStrLn "Passo 2: Para cada simbolo do alfabeto (exceto 'epsilon'), calcular as transições"
+      let transitionsTable = buildTransitionsTable normalizedAutomaton
+      printTransitionsTable transitionsTable
+      putStrLn "--------------------------------"
+      putStrLn "Passo 3: Marcar na tabela os estados iniciais e finais"
+      let markedTransitionsTable = buildMarkedTransitionsTable normalizedAutomaton
+      printMarkedTransitionsTable markedTransitionsTable
+
+
+  when (aType normalizedAutomaton == TypeNFA) $ do
+      putStrLn "Recebido um autômato do tipo NFA. Exportando o autômato no formato de DFA..."
+      let exportedType = TypeDFA
+      putStrLn "Fim"

@@ -1,0 +1,16 @@
+# Exemplo de um NFA
+type: nfa # Pode ser 'dfa', 'nfa', 'nfae'
+alphabet: [0, 1]
+states: [q0, q1, q2]
+initial_state: q0
+final_states: [q2]
+transitions:
+- from: q0
+  symbol: 0
+  to: [q0, q1]
+- from: q0
+  symbol: 1
+  to: [q1]
+- from: q1
+  symbol: 1
+  to: [q2]
