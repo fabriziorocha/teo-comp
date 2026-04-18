@@ -188,7 +188,7 @@ validateTransitionsNonEmpty automaton
 -- Função para validar cada transição:
 -- 1) 'from' pertence a 'states'
 -- 2) 'symbol' pertence a 'alphabet'
--- 3) 'to' é subconjunto de 'states'
+-- 3) para DFA/NFA, 'to' é subconjunto de 'states'; para NFAe, destinos podem ser descobertos via fecho-epsilon
 validateTransitions :: Automaton -> Either String Automaton
 validateTransitions automaton =
   case firstTransitionError (zip [1 :: Int ..] (aTransitions automaton)) of
@@ -216,7 +216,7 @@ validateTransitions automaton =
           ++ Text.unpack (aSymbol (tSymbol tr))
                 ++ " nao pertence a lista 'alphabet'"
             )
-      | not (all (`elem` states) (tTo tr)) =
+        | aType automaton /= TypeNFAE && not (all (`elem` states) (tTo tr)) =
           Just
             ( "Transicao "
                 ++ show idx
@@ -243,21 +243,66 @@ epsilonTargets automaton state =
 -- incluindo o próprio estado
 epsilonClosure :: Automaton -> State -> [State]
 epsilonClosure automaton start =
-  [s | s <- aStates automaton, Set.member s visited]
+  reverse (go Set.empty [start] [])
   where
-    visited = go Set.empty [start]
-
-    go seen [] = seen
-    go seen (current : rest)
-      | Set.member current seen = go seen rest
+    go _ [] acc = acc
+    go seen (current : rest) acc
+      | Set.member current seen = go seen rest acc
       | otherwise =
           let next = epsilonTargets automaton current
-           in go (Set.insert current seen) (next ++ rest)
+           in go (Set.insert current seen) (next ++ rest) (current : acc)
+
+uniqueStatesOrdered :: [State] -> [State]
+uniqueStatesOrdered = go Set.empty
+  where
+    go _ [] = []
+    go seen (x : xs)
+      | Set.member x seen = go seen xs
+      | otherwise = x : go (Set.insert x seen) xs
+
+splitCombinedState :: State -> [State]
+splitCombinedState state =
+  case Text.splitOn "," (aState state) of
+    [] -> [state]
+    parts -> map (State . Text.strip) parts
+
+closureForStoredState :: Automaton -> State -> [State]
+closureForStoredState automaton state =
+  uniqueStatesOrdered (splitCombinedState state >>= epsilonClosure automaton)
+
+stateFromStateList :: [State] -> State
+stateFromStateList states = State (formatTargets (uniqueStatesOrdered states))
 
 -- Função para construir a tabela de fecho-epsilon para cada estado do autômato
-buildClosureTable :: Automaton -> [(State, [State])]
+buildClosureTable :: Automaton -> ([(State, [State])], [State])
 buildClosureTable automaton =
-  [(state, epsilonClosure automaton state) | state <- aStates automaton]
+  (rows, knownStates)
+  where
+    initialStates = aStates automaton
+
+    rows =
+      [ (state, closureStates)
+      | state <- initialStates
+      , let closureStates = closureForStoredState automaton state
+      ]
+
+    discoveredAtomicStates =
+      uniqueStatesOrdered
+        [ s
+        | (_, closureStates) <- rows
+        , s <- closureStates
+        , s `notElem` initialStates
+        ]
+
+    discoveredClosureStates =
+      uniqueStatesOrdered
+        [ closureState
+        | (_, closureStates) <- rows
+        , let closureState = stateFromStateList closureStates
+        , closureState `notElem` initialStates
+        ]
+
+    knownStates = initialStates ++ discoveredAtomicStates ++ discoveredClosureStates
 
 -- Função para imprimir a tabela de fecho-epsilon de forma legível
 printClosureTable :: [(State, [State])] -> IO ()
@@ -269,40 +314,60 @@ printClosureTable rows = do
         ]
   renderAlignedTable header matrixRows
 
+printStatesTable :: [State] -> IO ()
+printStatesTable states = do
+  let header = ["Lista de estados"]
+      matrixRows =
+        if null states
+          then [["∅"]]
+          else [[aState state] | state <- states]
+  renderAlignedTable header matrixRows
+
 -- Função para calcular as transições para cada símbolo do alfabeto (exceto "epsilon") a partir de um estado, 
 -- considerando o fecho-epsilon
 buildTransitionsTable :: Automaton -> [(State, [State], [(Symbol, [State])])]
 buildTransitionsTable automaton =
-  [ (state, closureStates, [(symbol, targetStates closureStates symbol) | symbol <- symbols])
-  | state <- aStates automaton
-  , let closureStates = epsilonClosure automaton state
-  ]
+  go initialStates initialStates []
   where
+    initialStates = aStates automaton
     symbols = [symbol | symbol <- aAlphabet automaton, symbol /= Symbol "epsilon"]
 
+    go _ [] rows = rows
+    go knownStates (current : pendingStates) rows =
+      let closureStates = closureForStoredState automaton current
+          transitionsBySymbol =
+            [ (symbol, targetStates closureStates symbol)
+            | symbol <- symbols
+            ]
+          row = (current, closureStates, transitionsBySymbol)
+          discoveredStates =
+            uniqueStatesOrdered
+              [ combinedState
+              | (_, targets) <- transitionsBySymbol
+              , not (null targets)
+              , let combinedState = stateFromStateList targets
+              , combinedState `notElem` knownStates
+              ]
+          updatedStates = knownStates ++ discoveredStates
+          updatedPending = pendingStates ++ discoveredStates
+       in go updatedStates updatedPending (rows ++ [row])
+
     targetStates closureStates symbol =
-      uniqueStates
+      uniqueStatesOrdered
         ( closureStates >>= \s ->
-            concat [tTo tr | tr <- aTransitions automaton, tFrom tr == s, tSymbol tr == symbol] >>= epsilonClosure automaton
+            concat [tTo tr | tr <- aTransitions automaton, tFrom tr == s, tSymbol tr == symbol] >>= closureForStoredState automaton
         )
-
-    uniqueStates states = go Set.empty states
-
-    go _ [] = []
-    go seen (x : xs)
-      | Set.member x seen = go seen xs
-      | otherwise = x : go (Set.insert x seen) xs
 
 printTransitionsTable :: [(State, [State], [(Symbol, [State])])] -> IO ()
 printTransitionsTable rows = do
   let symbols = case rows of
         [] -> []
         ((_, _, transitionsBySymbol) : _) -> map fst transitionsBySymbol
-      header = ["Estado corrente", "Fecho-e"] ++ map aSymbol symbols
+      header = ["Estado corrente"] ++ map aSymbol symbols
       matrixRows =
-        [ [aState state, formatTargets closureStates]
+        [ [aState state]
             ++ map (formatTargets . snd) transitionsBySymbol
-        | (state, closureStates, transitionsBySymbol) <- rows
+        | (state, _, transitionsBySymbol) <- rows
         ]
   renderAlignedTable header matrixRows
 
@@ -310,15 +375,20 @@ buildMarkedTransitionsTable ::
   Automaton ->
   [(Text, State, [State], [(Symbol, [State])])]
 buildMarkedTransitionsTable automaton =
-  [ (markerFor state, state, closureStates, transitionsBySymbol)
+  [ (markerFor state transitionsBySymbol, state, closureStates, transitionsBySymbol)
   | (state, closureStates, transitionsBySymbol) <- buildTransitionsTable automaton
   ]
   where
-    markerFor state =
+    finalStates = aFinalStates automaton
+
+    markerFor state _transitionsBySymbol =
       initialMark <> finalMark
       where
         initialMark = if state == aInitialState automaton then "->" else ""
-        finalMark = if state `elem` aFinalStates automaton then "*" else ""
+        finalMark = if reachesFinalByClosure state then "*" else ""
+
+    reachesFinalByClosure state =
+      any (`elem` finalStates) (closureForStoredState automaton state)
 
 printMarkedTransitionsTable ::
   [(Text, State, [State], [(Symbol, [State])])] ->
@@ -337,6 +407,42 @@ printMarkedTransitionsTable rows = do
         | (marker, state, closureStates, transitionsBySymbol) <- rows
         ]
   renderAlignedTable header matrixRows
+
+buildConvertedNfa ::
+  Automaton ->
+  [(State, [State], [(Symbol, [State])])] ->
+  [(Text, State, [State], [(Symbol, [State])])] ->
+  Automaton
+buildConvertedNfa sourceAutomaton transitionsRows markedRows =
+  Automaton
+    { aType = TypeNFA,
+      aAlphabet = [symbol | symbol <- aAlphabet sourceAutomaton, symbol /= Symbol "epsilon"],
+      aStates = originalStates,
+      aInitialState = aInitialState sourceAutomaton,
+      aFinalStates = convertedFinalStates,
+      aTransitions = convertedTransitions
+    }
+  where
+    originalStates = [state | (_, state, _, _) <- markedRows]
+    originalFinalStates = aFinalStates sourceAutomaton
+
+    convertedFinalStates =
+      uniqueStatesOrdered
+        [ state
+        | (_, state, closureStates, _) <- markedRows
+        , any (`elem` originalFinalStates) closureStates
+        ]
+
+    convertedTransitions =
+      [ Transition
+          { tFrom = state,
+            tSymbol = symbol,
+            tTo = targetStates
+          }
+      | (state, _, transitionsBySymbol) <- transitionsRows,
+        (symbol, targetStates) <- transitionsBySymbol,
+        not (null targetStates)
+      ]
 
 formatTargets :: [State] -> Text
 formatTargets [] = "∅"
@@ -358,6 +464,34 @@ renderAlignedTable header matrixRows = do
     padRight width value =
       value <> Text.replicate (width - Text.length value) " "
 
+renderAutomatonYaml :: Automaton -> Text
+renderAutomatonYaml automaton =
+  Text.unlines
+    ( [ "type: " <> automatonTypeText (aType automaton),
+        "alphabet: " <> renderSymbolsInline (aAlphabet automaton),
+        "states: " <> renderStatesInline (aStates automaton),
+        "initial_state: " <> aState (aInitialState automaton),
+        "final_states: " <> renderStatesInline (aFinalStates automaton),
+        "transitions:"
+      ]
+        ++ concatMap renderTransitionLines (aTransitions automaton)
+    )
+  where
+    automatonTypeText TypeDFA = "dfa"
+    automatonTypeText TypeNFA = "nfa"
+    automatonTypeText TypeNFAE = "nfae"
+
+    renderSymbolsInline symbols =
+      "[" <> Text.intercalate ", " (map aSymbol symbols) <> "]"
+
+    renderStatesInline states =
+      "[" <> Text.intercalate ", " (map aState states) <> "]"
+
+    renderTransitionLines transition =
+      [ "- from: " <> aState (tFrom transition),
+        "  symbol: " <> aSymbol (tSymbol transition),
+        "  to: " <> renderStatesInline (tTo transition)
+      ]
 
 main :: IO ()
 main = do
@@ -418,16 +552,34 @@ main = do
       let exportedType = TypeNFA
       putStrLn "================================="
       putStrLn "Passo 1: Recebido um autômato do tipo NFAe. Calculando o fecho-epsilon de cada estado..."
-      let closureTable = buildClosureTable normalizedAutomaton
+      let (closureTable, expandedStates) = buildClosureTable normalizedAutomaton
+      let expandedAutomaton = normalizedAutomaton {aStates = expandedStates}
       printClosureTable closureTable
+      -- putStrLn "Lista de estados atualizada:"
+      -- printStatesTable expandedStates
       putStrLn "--------------------------------"
       putStrLn "Passo 2: Para cada simbolo do alfabeto (exceto 'epsilon'), calcular as transições"
       let transitionsTable = buildTransitionsTable normalizedAutomaton
-      printTransitionsTable transitionsTable
+      let originalStates = aStates normalizedAutomaton
+      let transitionsTableForStep2 = [row | row@(state, _, _) <- transitionsTable, state `elem` originalStates]
+      printTransitionsTable transitionsTableForStep2
       putStrLn "--------------------------------"
       putStrLn "Passo 3: Marcar na tabela os estados iniciais e finais"
-      let markedTransitionsTable = buildMarkedTransitionsTable normalizedAutomaton
-      printMarkedTransitionsTable markedTransitionsTable
+      let markedTransitionsTable = buildMarkedTransitionsTable expandedAutomaton
+      let closureFromStep1 state =
+            case lookup state closureTable of
+              Just closureStates -> closureStates
+              Nothing -> []
+      let markedTransitionsTableForStep3 = [(marker, state, closureFromStep1 state, transitionsBySymbol) | (marker, state, _, transitionsBySymbol) <- markedTransitionsTable, state `elem` originalStates]
+      printMarkedTransitionsTable markedTransitionsTableForStep3
+      putStrLn "--------------------------------"
+      putStrLn "Passo 4: Apresentação do autômato convertido para o formato para NFA"
+      let convertedNfa = buildConvertedNfa normalizedAutomaton transitionsTableForStep2 markedTransitionsTableForStep3
+      let convertedNfaYaml = renderAutomatonYaml convertedNfa
+      let outputFilePath = "nfae-nfa.yaml"
+      TIO.putStrLn convertedNfaYaml
+      TIO.writeFile outputFilePath convertedNfaYaml
+      putStrLn ("Arquivo YAML gerado em: " ++ outputFilePath)
 
 
   when (aType normalizedAutomaton == TypeNFA) $ do
