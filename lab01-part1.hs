@@ -467,7 +467,7 @@ printNfaToDfaStep2MarkedTable rows = do
 stateSetToDfaState :: [State] -> State
 stateSetToDfaState [] = State "EMPTY"
 stateSetToDfaState states =
-  State (Text.intercalate "," (map aState (canonicalStateSet states)))
+  State (Text.intercalate "_" (map aState (canonicalStateSet states)))
 
 buildConvertedDfa ::
   Automaton ->
@@ -479,34 +479,35 @@ buildConvertedDfa sourceAutomaton step1Rows step2MarkedRows =
     { aType = TypeDFA,
       aAlphabet = [symbol | symbol <- aAlphabet sourceAutomaton, symbol /= Symbol "epsilon"],
       aStates = convertedStates,
-      aInitialState = aInitialState sourceAutomaton,
+      aInitialState = stateSetToDfaState [aInitialState sourceAutomaton],
       aFinalStates = convertedFinalStates,
       aTransitions = convertedTransitions
     }
   where
-    convertedStates = aStates sourceAutomaton
     originalFinalStates = aFinalStates sourceAutomaton
+
+    convertedStates =
+      uniqueStatesOrdered
+        [ stateSetToDfaState currentSet
+        | (currentSet, _) <- step1Rows
+        ]
 
     convertedFinalStates =
       uniqueStatesOrdered
-        [ state
+        [ stateSetToDfaState currentSet
         | (_marker, currentSet, _transitionsBySymbol) <- step2MarkedRows
         , any (`elem` originalFinalStates) currentSet
-        , state <- currentSet
-        , state `elem` convertedStates
         ]
 
     convertedTransitions =
       [ Transition
-          { tFrom = sourceState,
+          { tFrom = stateSetToDfaState currentSet,
             tSymbol = symbol,
-            tTo = canonicalStateSet targetSet
+            tTo = [stateSetToDfaState targetSet]
           }
       | (currentSet, transitionsBySymbol) <- step1Rows,
-        [sourceState] <- [currentSet],
-        sourceState `elem` convertedStates,
         (symbol, targetSet) <- transitionsBySymbol,
-        not (null targetSet)
+        stateSetToDfaState currentSet `elem` convertedStates
       ]
 
 buildMarkedTransitionsTable ::
@@ -619,6 +620,10 @@ renderAutomatonYaml automaton =
     automatonTypeText TypeNFA = "nfa"
     automatonTypeText TypeNFAE = "nfae"
 
+    displayStateName stateName
+      | stateName == "EMPTY" = "∅"
+      | otherwise = stateName
+
     renderYamlText t
       | needsQuotes t = "\"" <> escapeYamlText t <> "\""
       | otherwise = t
@@ -635,10 +640,10 @@ renderAutomatonYaml automaton =
       "[" <> Text.intercalate ", " (map aSymbol symbols) <> "]"
 
     renderStatesInline states =
-      "[" <> Text.intercalate ", " (map (renderYamlText . aState) states) <> "]"
+      "[" <> Text.intercalate ", " (map (renderYamlText . displayStateName . aState) states) <> "]"
 
     renderTransitionLines transition =
-      [ "- from: " <> renderYamlText (aState (tFrom transition)),
+      [ "- from: " <> renderYamlText (displayStateName (aState (tFrom transition))),
         "  symbol: " <> aSymbol (tSymbol transition),
         "  to: " <> renderStatesInline (tTo transition)
       ]
