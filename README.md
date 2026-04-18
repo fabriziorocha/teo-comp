@@ -6,6 +6,8 @@ Este repositório contém um projeto desenvolvido para o curso de Computação A
 
 ### Programa lab01-part1
 
-O progrma **lab01-part1** converte um NFA-e em NFA. Além de apresentar os passos da conversão em tela, o programa também grava o novo autômato em arquivo.
+O progrma **lab01-part1** converte um NFA-e em NFA ou um NFA em DFA. Além de apresentar os passos da conversão em tela, o programa também grava o novo autômato em arquivo.
 
-* Arquivo de saída: nfae-nfa.yaml
+* Arquivos de saída:
+  * nfae-nfa.yaml
+  * nfa-dfa.yaml

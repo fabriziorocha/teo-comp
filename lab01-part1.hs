@@ -371,6 +371,99 @@ printTransitionsTable rows = do
         ]
   renderAlignedTable header matrixRows
 
+canonicalStateSet :: [State] -> [State]
+canonicalStateSet = Set.toAscList . Set.fromList
+
+-- Para a conversao NFA -> DFA, cada estado do DFA eh um conjunto de estados do NFA.
+-- Esta funcao constroi recursivamente a tabela de transicoes por simbolo para cada estado-conjunto descoberto.
+buildNfaToDfaStep1Table :: Automaton -> [([State], [(Symbol, [State])])]
+buildNfaToDfaStep1Table automaton =
+  go [initialSet] [initialSet] []
+  where
+    symbols = [symbol | symbol <- aAlphabet automaton, symbol /= Symbol "epsilon"]
+    initialSet = canonicalStateSet [aInitialState automaton]
+
+    go _ [] rows = rows
+    go knownSets (currentSet : pendingSets) rows =
+      let transitionsBySymbol =
+            [ (symbol, nextSet currentSet symbol)
+            | symbol <- symbols
+            ]
+          row = (currentSet, transitionsBySymbol)
+          discoveredSets =
+            uniqueStateSets
+              [ targets
+              | (_, targets) <- transitionsBySymbol
+              , targets `notElem` knownSets
+              ]
+          updatedKnown = knownSets ++ discoveredSets
+          updatedPending = pendingSets ++ discoveredSets
+       in go updatedKnown updatedPending (rows ++ [row])
+
+    nextSet currentSet symbol =
+      canonicalStateSet
+        [ target
+        | source <- currentSet
+        , tr <- aTransitions automaton
+        , tFrom tr == source
+        , tSymbol tr == symbol
+        , target <- tTo tr
+        ]
+
+    uniqueStateSets = goUnique Set.empty
+      where
+        goUnique _ [] = []
+        goUnique seen (x : xs)
+          | Set.member x seen = goUnique seen xs
+          | otherwise = x : goUnique (Set.insert x seen) xs
+
+printNfaToDfaStep1Table :: [([State], [(Symbol, [State])])] -> IO ()
+printNfaToDfaStep1Table rows = do
+  let visibleRows = [row | row@(currentSet, _) <- rows, not (null currentSet)]
+      symbols = case rows of
+        [] -> []
+        ((_, transitionsBySymbol) : _) -> map fst transitionsBySymbol
+      header = ["Estado corrente"] ++ map aSymbol symbols
+      matrixRows =
+        [ [formatTargets currentSet]
+            ++ map (formatTargets . snd) transitionsBySymbol
+        | (currentSet, transitionsBySymbol) <- visibleRows
+        ]
+  renderAlignedTable header matrixRows
+
+buildNfaToDfaStep2MarkedTable ::
+  Automaton ->
+  [([State], [(Symbol, [State])])] ->
+  [(Text, [State], [(Symbol, [State])])]
+buildNfaToDfaStep2MarkedTable automaton rows =
+  [ (markerFor currentSet, currentSet, transitionsBySymbol)
+  | (currentSet, transitionsBySymbol) <- rows
+  , not (null currentSet)
+  ]
+  where
+    nfaFinalStates = aFinalStates automaton
+    initialSet = canonicalStateSet [aInitialState automaton]
+
+    markerFor currentSet = initialMark <> finalMark
+      where
+        initialMark = if currentSet == initialSet then "->" else ""
+        finalMark = if any (`elem` nfaFinalStates) currentSet then "*" else ""
+
+printNfaToDfaStep2MarkedTable ::
+  [(Text, [State], [(Symbol, [State])])] ->
+  IO ()
+printNfaToDfaStep2MarkedTable rows = do
+  let symbols = case rows of
+        [] -> []
+        ((_, _, transitionsBySymbol) : _) -> map fst transitionsBySymbol
+      header = ["", "Estado corrente"] ++ map aSymbol symbols
+      matrixRows =
+        [ [marker, formatTargets currentSet]
+            ++ map (formatTargets . snd) transitionsBySymbol
+        | (marker, currentSet, transitionsBySymbol) <- rows
+        ]
+  renderAlignedTable header matrixRows
+
 buildMarkedTransitionsTable ::
   Automaton ->
   [(Text, State, [State], [(Symbol, [State])])]
@@ -585,4 +678,19 @@ main = do
   when (aType normalizedAutomaton == TypeNFA) $ do
       putStrLn "Recebido um autômato do tipo NFA. Exportando o autômato no formato de DFA..."
       let exportedType = TypeDFA
-      putStrLn "Fim"
+      putStrLn "================================="
+      putStrLn "Passo 1: Recebido um autômato do tipo NFA (sem movimentos vazios)."
+      putStrLn "Para cada novo estado do DFA (representado por um conjunto de estados do NFA),"
+      putStrLn "calcular para onde ele vai com cada símbolo do alfabeto, unindo as transições"
+      putStrLn "individuais de todos os estados do conjunto. Cada resultado gera um novo"
+      putStrLn "estado-conjunto candidato do DFA, que deve ser processado recursivamente."
+      let step1Table = buildNfaToDfaStep1Table normalizedAutomaton
+      printNfaToDfaStep1Table step1Table
+      putStrLn "--------------------------------"
+      putStrLn "Passo 2: Marcar na tabela os estados iniciais e finais do DFA."
+      putStrLn "O estado inicial do DFA e o conjunto que contem o estado inicial do NFA."
+      putStrLn "Um estado do DFA e de aceitacao quando contem pelo menos um estado"
+      putStrLn "de aceitacao do NFA original."
+      let step2MarkedTable = buildNfaToDfaStep2MarkedTable normalizedAutomaton step1Table
+      printNfaToDfaStep2MarkedTable step2MarkedTable
+      
