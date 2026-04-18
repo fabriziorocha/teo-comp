@@ -464,6 +464,51 @@ printNfaToDfaStep2MarkedTable rows = do
         ]
   renderAlignedTable header matrixRows
 
+stateSetToDfaState :: [State] -> State
+stateSetToDfaState [] = State "EMPTY"
+stateSetToDfaState states =
+  State (Text.intercalate "," (map aState (canonicalStateSet states)))
+
+buildConvertedDfa ::
+  Automaton ->
+  [([State], [(Symbol, [State])])] ->
+  [(Text, [State], [(Symbol, [State])])] ->
+  Automaton
+buildConvertedDfa sourceAutomaton step1Rows step2MarkedRows =
+  Automaton
+    { aType = TypeDFA,
+      aAlphabet = [symbol | symbol <- aAlphabet sourceAutomaton, symbol /= Symbol "epsilon"],
+      aStates = convertedStates,
+      aInitialState = aInitialState sourceAutomaton,
+      aFinalStates = convertedFinalStates,
+      aTransitions = convertedTransitions
+    }
+  where
+    convertedStates = aStates sourceAutomaton
+    originalFinalStates = aFinalStates sourceAutomaton
+
+    convertedFinalStates =
+      uniqueStatesOrdered
+        [ state
+        | (_marker, currentSet, _transitionsBySymbol) <- step2MarkedRows
+        , any (`elem` originalFinalStates) currentSet
+        , state <- currentSet
+        , state `elem` convertedStates
+        ]
+
+    convertedTransitions =
+      [ Transition
+          { tFrom = sourceState,
+            tSymbol = symbol,
+            tTo = canonicalStateSet targetSet
+          }
+      | (currentSet, transitionsBySymbol) <- step1Rows,
+        [sourceState] <- [currentSet],
+        sourceState `elem` convertedStates,
+        (symbol, targetSet) <- transitionsBySymbol,
+        not (null targetSet)
+      ]
+
 buildMarkedTransitionsTable ::
   Automaton ->
   [(Text, State, [State], [(Symbol, [State])])]
@@ -574,14 +619,26 @@ renderAutomatonYaml automaton =
     automatonTypeText TypeNFA = "nfa"
     automatonTypeText TypeNFAE = "nfae"
 
+    renderYamlText t
+      | needsQuotes t = "\"" <> escapeYamlText t <> "\""
+      | otherwise = t
+
+    needsQuotes t = Text.any (`elem` [',', '[', ']', '{', '}', ':']) t || Text.any (`elem` [' ', '\t']) t
+
+    escapeYamlText = Text.concatMap escapeChar
+
+    escapeChar '"' = "\\\""
+    escapeChar '\\' = "\\\\"
+    escapeChar c = Text.singleton c
+
     renderSymbolsInline symbols =
       "[" <> Text.intercalate ", " (map aSymbol symbols) <> "]"
 
     renderStatesInline states =
-      "[" <> Text.intercalate ", " (map aState states) <> "]"
+      "[" <> Text.intercalate ", " (map (renderYamlText . aState) states) <> "]"
 
     renderTransitionLines transition =
-      [ "- from: " <> aState (tFrom transition),
+      [ "- from: " <> renderYamlText (aState (tFrom transition)),
         "  symbol: " <> aSymbol (tSymbol transition),
         "  to: " <> renderStatesInline (tTo transition)
       ]
@@ -693,4 +750,12 @@ main = do
       putStrLn "de aceitacao do NFA original."
       let step2MarkedTable = buildNfaToDfaStep2MarkedTable normalizedAutomaton step1Table
       printNfaToDfaStep2MarkedTable step2MarkedTable
+      putStrLn "--------------------------------"
+      putStrLn "Passo 3: Apresentacao do automato convertido para o formato de DFA"
+      let convertedDfa = buildConvertedDfa normalizedAutomaton step1Table step2MarkedTable
+      let convertedDfaYaml = renderAutomatonYaml convertedDfa
+      let outputFilePath = "nfa-dfa.yaml"
+      TIO.putStrLn convertedDfaYaml
+      TIO.writeFile outputFilePath convertedDfaYaml
+      putStrLn ("Arquivo YAML gerado em: " ++ outputFilePath)
       
