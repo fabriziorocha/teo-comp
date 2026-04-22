@@ -37,3 +37,10 @@ cabal run lab01-part2 -- lab01-part2.yaml
 
 Arquivo de saida:
 * regex-nfae.yaml
+* regex-nfae.puml
+
+Para visualizar o automato usando PlantUML:
+
+```bash
+plantuml regex-nfae.puml
+```

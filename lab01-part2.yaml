@@ -1,1 +1,1 @@
-expression: "(a|b)*a+bb"
+expression: "(a|b)*a+b?b"
