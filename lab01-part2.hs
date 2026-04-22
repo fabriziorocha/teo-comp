@@ -358,6 +358,36 @@ renderAutomatonYaml aut =
         "  to: " <> renderStatesInline (tTo tr)
       ]
 
+renderAutomatonPlantUml :: Text -> Automaton -> Text
+renderAutomatonPlantUml regex aut =
+  Text.unlines
+    ( [ "@startuml",
+        "title Automato de reconhecimento para regex: " <> regex,
+        "hide empty description",
+        "skinparam state {",
+        "  BackgroundColor White",
+        "  BorderColor Black",
+        "}",
+        "[*] --> " <> aState (aInitialState aut)
+      ]
+        ++ map renderFinalState (aFinalStates aut)
+        ++ concatMap renderTransition (aTransitions aut)
+        ++ ["@enduml"]
+    )
+  where
+    renderFinalState st = "state " <> aState st <> " <<accepting>>"
+
+    renderTransition tr =
+      [ aState (tFrom tr)
+          <> " --> "
+          <> aState target
+          <> " : "
+          <> escapePlantUmlLabel (aSymbol (tSymbol tr))
+      | target <- tTo tr
+      ]
+
+    escapePlantUmlLabel = Text.replace "\n" "\\n"
+
 stripCommentsFromContent :: Text -> Text
 stripCommentsFromContent =
   Text.unlines
@@ -392,8 +422,12 @@ main = do
   let fragment = evalState (compileRegex regexAst) 0
   let automaton = toAutomaton fragment
   let automatonYaml = renderAutomatonYaml automaton
+  let automatonPlantUml = renderAutomatonPlantUml (riExpression regexInput) automaton
   let outputFilePath = "regex-nfae.yaml"
+  let outputPlantUmlPath = "regex-nfae.puml"
 
   putStrLn "Expressao regular recebida. Gerando NFAe com construcao de Thompson..."
   TIO.writeFile outputFilePath automatonYaml
+  TIO.writeFile outputPlantUmlPath automatonPlantUml
   putStrLn ("Arquivo YAML gerado em: " ++ outputFilePath)
+  putStrLn ("Arquivo PlantUML gerado em: " ++ outputPlantUmlPath)
