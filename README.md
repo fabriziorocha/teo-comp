@@ -61,3 +61,5 @@ Abaixo estão os prints que demonstram a resolução de 5 regex crossword. Sendo
 
 E a seguir, o link para o regex crossword 5x5 criado como parte 3 do trabalho:
 [TC-FABRIZIO](https://regexcrossword.com/playerpuzzles/69e8160c7a4b5)
+!(qrcode.png)
+
