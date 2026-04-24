@@ -59,5 +59,8 @@ Abaixo estão os prints que demonstram a resolução de 5 regex crossword. Sendo
 
 ![Crossword 5](crossword5.png)
 
-E a seguir, o link para resolução do regex crossword 5x5 que eu criei:
-[Regex Crossword 5x5](https://regexcrossword.com/builder/69e8160c7a4b5)
+E a seguir, o link para o regex crossword 5x5 criado como parte 3 do trabalho:
+[TC-FABRIZIO](https://regexcrossword.com/playerpuzzles/69e8160c7a4b5)
+
+![QRCode](qrcode.png)
+
