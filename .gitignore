@@ -2,6 +2,7 @@
 /.vscode
 /dist-newstyle
 /lab01-part1
+/nfae.yaml
 /nfae-nfa.yaml
 /nfa-dfa.yaml
 test*
