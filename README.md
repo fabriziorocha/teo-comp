@@ -29,6 +29,7 @@ stack run lab01-part1 -- nfae.yaml
 ```
 
 Saída gerada:
+
 * nfae-nfa.yaml
 
 Exemplo 2 (entrada NFA, arquivo `test-nfa.yaml`):
@@ -38,14 +39,15 @@ stack run lab01-part1 -- test-nfa.yaml
 ```
 
 Saída gerada:
-* nfa-dfa.yaml
 
+* nfa-dfa.yaml
 
 ### Parte 2: Implementação de Expressões Regulares: Programa lab01-part2
 
 O programa **lab01-part2** le uma expressao regular e gera um automato no formato NFAe usando a construcao de Thompson.
 
 Operadores suportados:
+
 * Concatenacao: `ab`
 * Uniao: `a|b`
 * Fecho de Kleene: `a*`
@@ -65,6 +67,7 @@ stack run lab01-part2 -- lab01-part2.yaml
 ```
 
 Arquivo de saida:
+
 * regex-nfae.yaml
 * regex-nfae.puml
 
@@ -73,4 +76,3 @@ Para visualizar o automato usando PlantUML:
 ```bash
 plantuml regex-nfae.puml
 ```
-
